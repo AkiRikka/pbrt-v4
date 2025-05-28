@@ -555,6 +555,8 @@ set (PBRT_SOURCE
   src/pbrt/textures.cpp
 
   src/pbrt/cmd/pspec_gpu.cpp
+
+  src/pbrt/featureline.cpp
   )
   
 if (MSVC)
@@ -583,6 +585,8 @@ set (PBRT_SOURCE_HEADERS
   src/pbrt/scene.h
   src/pbrt/shapes.h
   src/pbrt/textures.h
+
+  src/pbrt/featureline.h
   )  
 
 SET (PBRT_CPU_SOURCE
