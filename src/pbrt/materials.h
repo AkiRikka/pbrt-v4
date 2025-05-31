@@ -429,6 +429,8 @@ class HairMaterial {
 // DiffuseMaterial Definition
 class DiffuseMaterial {
   public:
+    const SpectrumTexture &GetReflectance() const { return reflectance; } // reflectance Getter 函数
+
     // DiffuseMaterial Type Definitions
     using BxDF = DiffuseBxDF;
     using BSSRDF = void;
@@ -553,6 +555,8 @@ class ConductorMaterial {
 // CoatedDiffuseMaterial Definition
 class CoatedDiffuseMaterial {
   public:
+    const SpectrumTexture &GetReflectance() const { return reflectance; } // reflectance Getter 函数
+
     using BxDF = CoatedDiffuseBxDF;
     using BSSRDF = void;
     // CoatedDiffuseMaterial Public Methods

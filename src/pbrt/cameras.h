@@ -343,7 +343,8 @@ class PerspectiveCamera : public ProjectiveCamera {
     PerspectiveCamera(CameraBaseParameters baseParameters, Float fov,
                       Bounds2f screenWindow, Float lensRadius, Float focalDist)
         : ProjectiveCamera(baseParameters, Perspective(fov, 1e-2f, 1000.f), screenWindow,
-                           lensRadius, focalDist) {
+                           lensRadius, focalDist) ,
+          fov(fov) {
         // Compute differential changes in origin for perspective camera rays
         dxCamera =
             cameraFromRaster(Point3f(1, 0, 0)) - cameraFromRaster(Point3f(0, 0, 0));
@@ -368,6 +369,9 @@ class PerspectiveCamera : public ProjectiveCamera {
         // Compute minimum differentials for _PerspectiveCamera_
         FindMinimumDifferentials(this);
     }
+
+    PBRT_CPU_GPU
+    Float GetFOV() const { return fov; } //FOV Getter函数
 
     PerspectiveCamera() = default;
 
@@ -400,6 +404,8 @@ class PerspectiveCamera : public ProjectiveCamera {
     Vector3f dxCamera, dyCamera;
     Float cosTotalWidth;
     Float A;
+
+    Float fov; 
 };
 
 // SphericalCamera Definition
