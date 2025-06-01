@@ -3763,6 +3763,13 @@ void FeatureLineIntegrator::Render() {
 
     progressPass2.Done();
     LOG_VERBOSE("Feature Line Rendering complete");
+
+    // 写入
+    LOG_VERBOSE("Writing final image");
+    ImageMetadata metadata;
+    metadata.samplesPerPixel = spp;  // 或者你实际使用的样本数
+    camera.InitMetadata(&metadata);
+    camera.GetFilm().WriteImage(metadata, 1.0f);  // 写入最终图片
 }
 
 SampledSpectrum FeatureLineIntegrator::Li(RayDifferential ray, SampledWavelengths &lambda,
