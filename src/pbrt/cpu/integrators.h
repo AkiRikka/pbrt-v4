@@ -508,117 +508,152 @@ struct FeatureLine {
     Point3f position;
     Float depth;
     SampledSpectrum color;
-    // Vector3f normal;
 
     FeatureLine() : depth(Infinity) {}
     FeatureLine(Point3f pos, Float d, SampledSpectrum c)
-        : position(pos), depth(d), color(c){}
+        : position(pos), depth(d), color(c) {}
     
     bool IsValid() const { return depth < Infinity; } 
 };
 
-struct PathSample
-{
-    RayDifferential ray;    // 采样光线
-    SampledSpectrum L;      // 本次采样得到的辐射亮度
-    SampledWavelengths lambda;  // 采样使用的波长
-    std::vector<SurfaceInteraction> intersections;  // 表面交点序列
+// 路径顶点信息，用于存储路径上的交点信息
+struct PathVertex {
+    Point3f position;
+    Vector3f normal;
+    SampledSpectrum throughput;  // 到达该顶点时的光照信息
+    SurfaceInteraction intersection;
+    
+    PathVertex() = default;
+    PathVertex(const SurfaceInteraction& si, const SampledSpectrum& beta)
+        : position(si.p()), normal(si.n), throughput(beta), intersection(si) {}
+};
 
-    PathSample(const RayDifferential& r, const SampledSpectrum& radiance,
-               const SampledWavelengths& wavelengths)
-        : ray(r), L(radiance), lambda(wavelengths) {}
+// 路径边信息
+struct PathEdge {
+    Point3f start;
+    Point3f end;
+    Vector3f direction;
+    Float length;
+    int vertexIndex;  // 该边终点在路径中的顶点索引
+    
+    PathEdge() = default;
+    PathEdge(Point3f s, Point3f e, int idx) 
+        : start(s), end(e), vertexIndex(idx) {
+        direction = Normalize(e - s);
+        length = Distance(s, e);
+    }
+};
+
+// 完整的路径信息
+struct PathSample {
+    RayDifferential initialRay;
+    SampledWavelengths lambda;
+    std::vector<PathVertex> vertices;  // 路径顶点序列
+    std::vector<PathEdge> edges;       // 路径边序列
+    SampledSpectrum finalContribution; // 最终贡献
+    
+    PathSample(const RayDifferential& ray, const SampledWavelengths& wavelengths)
+        : initialRay(ray), lambda(wavelengths), finalContribution(0.0f) {}
+    
+    void AddVertex(const SurfaceInteraction& si, const SampledSpectrum& beta) {
+        vertices.emplace_back(si, beta);
+        
+        // 如果不是第一个顶点，创建边
+        if (vertices.size() > 1) {
+            Point3f start = (vertices.size() == 2) ? initialRay.o : vertices[vertices.size()-2].position;
+            Point3f end = si.p();
+            edges.emplace_back(start, end, vertices.size() - 1);
+        }
+    }
 };
 
 class PathCache {
 private:
-    std::unordered_map<uint64_t, std::vector<PathSample>> cache;    // 使用(x, y)索引来存储像素对应的 Path
+    std::unordered_map<uint64_t, std::vector<PathSample>> cache;
+    mutable std::mutex cacheMutex;
 
     uint64_t PixelToKey(Point2i pixel) const {
         return (uint64_t(pixel.x) << 32) | uint64_t(pixel.y);
     }
 
 public:
-    void AddPath(Point2i pixel, const PathSample& path) {
+    void AddPath(Point2i pixel, PathSample&& path) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
         uint64_t key = PixelToKey(pixel);
-        cache[key].push_back(path);
+        cache[key].push_back(std::move(path));
     }
 
     const std::vector<PathSample>* GetPaths(Point2i pixel) const {
+        std::lock_guard<std::mutex> lock(cacheMutex);
         uint64_t key = PixelToKey(pixel);
         auto it = cache.find(key);
         return (it != cache.end()) ? &it->second : nullptr;
     }
 
     void Clear() {
+        std::lock_guard<std::mutex> lock(cacheMutex);
         cache.clear();
     }
 
     size_t Size() const {
+        std::lock_guard<std::mutex> lock(cacheMutex);
         return cache.size();
     }
 };
 
 class FeatureLineIntegrator : public RayIntegrator {
 public:
-    // Constructor
     FeatureLineIntegrator(int maxDepth, Camera camera, Sampler sampler,
                           Primitive aggregate, std::vector<Light> lights,
                           const std::string &lightSampleStrategy = "bvh",
                           bool regularize = false, int testSamples = 16,
-                          Float lineThrehold = 0.1f);
+                          Float lineThreshold = 0.1f);
     
     void Render() override;
-
-    // 似乎用不到
-    // void EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sampler sampler,
-    //                         ScratchBuffer &scratchBuffer) override;
 
     SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda, 
                       Sampler sampler, ScratchBuffer &scratchBuffer,
                       VisibleSurface *visibleSurface) const override;
     
-    // Feature line detection methods
-    FeatureLine IntersectLine(const RayDifferential& ray, Point2i pixel,
-                             const SampledWavelengths& lambda) const;
+    // Feature line detection methods (Algorithm 3)
+    FeatureLine IntersectLine(const PathEdge& edge, Point2i pixel) const;
+    
+    // Path modification (Algorithm 2)
+    PathSample ModifyPath(PathSample originalPath, Point2i pixel) const;
+    
+    // Path tracing that stores complete path information
+    PathSample TracePath(const RayDifferential& ray, SampledWavelengths& lambda,
+                        Sampler sampler, ScratchBuffer& scratchBuffer) const;
 
-    RayDifferential ModifyPath(const RayDifferential& originalRay, Point2i pixel,
-                              const SampledWavelengths& lambda) const;
-
-    // Factory method
     static std::unique_ptr<FeatureLineIntegrator> Create(
         const ParameterDictionary &parameters, Camera camera, Sampler sampler,
         Primitive aggregate, std::vector<Light> lights, const FileLoc *loc);
 
     std::string ToString() const override;
 
-
 private:
-    // 这三个函数都和特征线检测有关，可以改掉
-    bool SatisfiesLineMetric(const SurfaceInteraction& intersection1,
-                           const SurfaceInteraction& intersection2) const;
-    
-    Bounds2f ComputeTestRegion(const RayDifferential& ray, Point2i pixel) const;
-    
+    // Feature line detection helper functions
+    bool SatisfiesLineMetric(const PathVertex& vertex1, const PathVertex& vertex2) const;
+    Bounds2f ComputeTestRegion(const PathEdge& edge, Point2i pixel) const;
     std::vector<Point2i> SampleRegion(const Bounds2f& region, int numSamples) const;
-
-
-    // 采样直接光照
+    
+    // Create emission vertex for feature line
+    PathVertex CreateEmissionVertex(const FeatureLine& line) const;
+    
+    // Remove edges after specified edge index
+    void RemoveEdgesAfter(PathSample& path, int edgeIndex) const;
+    
+    // Direct lighting sampling
     SampledSpectrum SampleLd(const SurfaceInteraction &intr, const BSDF *bsdf,
                            SampledWavelengths &lambda, Sampler sampler) const;
 
-    // Standard path tracing (similar to PathIntegrator)
-    SampledSpectrum StandardLi(RayDifferential ray, SampledWavelengths &lambda,
-                              Sampler sampler, ScratchBuffer &scratchBuffer,
-                              VisibleSurface *visibleSurface) const;
-
     int maxDepth;
-    LightSampler lightSampler;  // 光源采样
-    bool regularize;        // 启用平滑
-    int testSamples;        // m number of samples for the intersection test
-    Float lineThreshold;    // 度量阈值
+    LightSampler lightSampler;
+    bool regularize;
+    int testSamples;        // m number of samples for intersection test
+    Float lineThreshold;    // metric threshold
 
     mutable PathCache pathCache;
-    mutable std::mutex cacheMutex;
 };
 
 }  // namespace pbrt

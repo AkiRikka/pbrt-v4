@@ -3658,23 +3658,27 @@ FeatureLineIntegrator::FeatureLineIntegrator(
       testSamples(testSamples),
       lineThreshold(lineThreshold) {}
 
+// Algorithm 1: Main rendering loop
 void FeatureLineIntegrator::Render() {
     LOG_VERBOSE("Start Feature Line Rendering");
-    LOG_VERBOSE("Pass 1: Path Collection");
-    pathCache.Clear();
-
-    // Algorithm 1, first loop: collect paths
+    
     Bounds2i pixelBounds = camera.GetFilm().PixelBounds();
     int spp = samplerPrototype.SamplesPerPixel();
-
-    // Create progress reporter for pass 1 (path collection)
-    ProgressReporter progressPass1(int64_t(spp) * pixelBounds.Area(), 
-                                   "Pass 1: Path Collection", Options->quiet);
-
+    
     ThreadLocal<ScratchBuffer> scratchBuffers([]() { return ScratchBuffer(); });    
     ThreadLocal<Sampler> samplers([this]() { return samplerPrototype.Clone(); });
 
-    // Collect paths
+    // Pass 1: Path collection
+    LOG_VERBOSE("Pass 1: Path Collection");
+    pathCache.Clear();
+
+    // Create progress reporter for Pass 1 (path collection)
+    // Total work = pixels * samples per pixel
+    ProgressReporter progressPass1(int64_t(spp) * pixelBounds.Area(), 
+                                   "Pass 1: Path Collection", 
+                                   Options->quiet);
+
+    // Collect paths (Algorithm 1, first loop)
     ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
         ScratchBuffer &scratchBuffer = scratchBuffers.Get();
         Sampler &sampler = samplers.Get();
@@ -3693,14 +3697,9 @@ void FeatureLineIntegrator::Render() {
                     camera.GenerateRayDifferential(cameraSample, lambda);
                 
                 if (cameraRay) {
-                    // Trace path and store in cache
-                    SampledSpectrum L = StandardLi(cameraRay->ray, lambda, sampler, 
-                                                 scratchBuffer, nullptr);
-                    
-                    PathSample pathSample(cameraRay->ray, L, lambda);
-                    
-                    std::lock_guard<std::mutex> lock(cacheMutex);
-                    pathCache.AddPath(pPixel, pathSample);
+                    // Trace complete path and store
+                    PathSample path = TracePath(cameraRay->ray, lambda, sampler, scratchBuffer);
+                    pathCache.AddPath(pPixel, std::move(path));
                 }
                 
                 scratchBuffer.Reset();
@@ -3708,83 +3707,127 @@ void FeatureLineIntegrator::Render() {
         }
         
         // Update progress after processing each tile
-        progressPass1.Update(spp * tileBounds.Area());
+        // Each tile processes tileBounds.Area() * spp samples
+        progressPass1.Update(tileBounds.Area() * spp);
     });
 
+    // Mark Pass 1 as complete
     progressPass1.Done();
     LOG_VERBOSE("Pass 1 complete. Cached paths for %zu pixels", pathCache.Size());
 
+    // Pass 2: Feature line rendering (Algorithm 1, second loop)
     LOG_VERBOSE("Pass 2: Feature Line Rendering");
-
-    // Calculate total work for pass 2 (based on actual cached paths)
-    int64_t totalPass2Work = 0;
-    for (Point2i pPixel : pixelBounds) {
-        const std::vector<PathSample>* paths = pathCache.GetPaths(pPixel);
-        if (paths) {
-            totalPass2Work += paths->size();
-        }
-    }
-
-    // Create progress reporter for pass 2 (feature line rendering)
-    ProgressReporter progressPass2(totalPass2Work, 
-                                   "Pass 2: Feature Line Rendering", Options->quiet);
-
-    // Algorithm2, second loop: modify path and render
+    
+    // Create progress reporter for Pass 2 (feature line rendering)
+    // Total work = pixels * samples per pixel (same as Pass 1)
+    ProgressReporter progressPass2(int64_t(spp) * pixelBounds.Area(), 
+                                   "Pass 2: Feature Line Rendering", 
+                                   Options->quiet);
+    
     ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
         ScratchBuffer &scratchBuffer = scratchBuffers.Get();
-        Sampler &sampler = samplers.Get();
-        int64_t tileWorkDone = 0;
-
+        
         for (Point2i pPixel : tileBounds) {
             const std::vector<PathSample>* paths = pathCache.GetPaths(pPixel);
             if (!paths) continue;
 
-            for (const PathSample& pathSample : *paths) {
-                // Algorithm2: Modify path
-                RayDifferential modifiedRay = ModifyPath(pathSample.ray, pPixel, pathSample.lambda);
+            for (const PathSample& originalPath : *paths) {
+                // Algorithm 2: Modify path to intersect feature lines
+                PathSample modifiedPath = ModifyPath(originalPath, pPixel);
                 
-                // Evaluate modified path
-                SampledSpectrum L = StandardLi(modifiedRay, const_cast<SampledWavelengths&>(pathSample.lambda),
-                                               sampler, scratchBuffer, nullptr);
-                
-                // Add to film
-                camera.GetFilm().AddSample(pPixel, L, pathSample.lambda, nullptr, 1.0f);
-                scratchBuffer.Reset();
-                
-                tileWorkDone++;
+                // Add contribution to film
+                camera.GetFilm().AddSample(pPixel, modifiedPath.finalContribution, 
+                                         modifiedPath.lambda, nullptr, 1.0f);
             }
         }
         
         // Update progress after processing each tile
-        if (tileWorkDone > 0) {
-            progressPass2.Update(tileWorkDone);
-        }
+        // Each tile processes tileBounds.Area() * spp paths
+        progressPass2.Update(tileBounds.Area() * spp);
     });
 
+    // Mark Pass 2 as complete
     progressPass2.Done();
     LOG_VERBOSE("Feature Line Rendering complete");
 
-    // 写入
+    // Write final image
     LOG_VERBOSE("Writing final image");
     ImageMetadata metadata;
-    metadata.samplesPerPixel = spp;  // 或者你实际使用的样本数
-    camera.InitMetadata(&metadata);
-    camera.GetFilm().WriteImage(metadata, 1.0f);  // 写入最终图片
-}
-
-SampledSpectrum FeatureLineIntegrator::Li(RayDifferential ray, SampledWavelengths &lambda,
-                                        Sampler sampler, ScratchBuffer &scratchBuffer,
-                                        VisibleSurface *visibleSurface) const {
-    return StandardLi(ray, lambda, sampler, scratchBuffer, visibleSurface);
-}
-
-// Feature line 相交测试，一个简单的用于测试的，后面应该改掉
-FeatureLine FeatureLineIntegrator::IntersectLine(const RayDifferential& ray, Point2i pixel,
-                                               const SampledWavelengths& lambda) const {
-    // Compute test region around the ray
-    Bounds2f region = ComputeTestRegion(ray, pixel);
+    metadata.samplesPerPixel = spp;
     
-    // Sample nearby pixels in the region
+    // Add render time information to metadata
+    metadata.renderTimeSeconds = progressPass1.ElapsedSeconds() + progressPass2.ElapsedSeconds();
+    
+    camera.InitMetadata(&metadata);
+    camera.GetFilm().WriteImage(metadata, 1.0f);
+}
+
+// Algorithm 2: 如果检测到 featureline，把此 vertex 标记为发光体
+// 替换其光照信息为 featureline 的颜色
+PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pixel) const {
+    PathSample modifiedPath = originalPath; // Copy original path
+    bool featureLineFound = false;
+    
+    // Iterate through edges starting from sensor (camera)
+    for (int edgeIndex = 0; edgeIndex < originalPath.edges.size(); ++edgeIndex) {
+        const PathEdge& edge = originalPath.edges[edgeIndex];
+        
+        // Algorithm 3: Feature line intersection test
+        FeatureLine line = IntersectLine(edge, pixel);
+        
+        // 
+        if (line.IsValid()) {
+            featureLineFound = true;
+            // Feature line found - modify the path
+            
+            // Create emission vertex at feature line position
+            PathVertex emissionVertex = CreateEmissionVertex(line);
+
+            int insertIndex = edge.vertexIndex;
+            PathEdge newEdge(edge.start, line.position, insertIndex);
+
+            modifiedPath.vertices.insert(
+                modifiedPath.vertices.begin() + insertIndex,
+                emissionVertex
+            );
+
+            modifiedPath.edges[edgeIndex] = newEdge;
+
+            RemoveEdgesAfter(modifiedPath, edgeIndex);
+
+            // 计算最终贡献
+            if (insertIndex > 0) {
+                // modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * line.color;
+
+                // 为了debug写的
+                Float red_spectrum[NSpectrumSamples];
+                for (int i = 0; i < NSpectrumSamples; ++i) {
+                Float lambda = Lerp(Float(i) / (NSpectrumSamples - 1), 400.0f, 700.0f);
+                red_spectrum[i] = (lambda >= 600.0f && lambda <= 700.0f) ? 0.05f : 0.005f;
+                }
+                SampledSpectrum darkRed(pstd::span<const Float>(red_spectrum, NSpectrumSamples));
+                modifiedPath.finalContribution = darkRed;
+            } else {
+                modifiedPath.finalContribution = line.color;
+            }
+            
+            break; // Stop at first feature line intersection
+        }
+    }
+    
+    // 这里如果没检测到 featureline，应该不会修改 modifiedPath 的值？可能是现在的 Interest 有问题导致的？
+    // modifiedPath.finalContribution = originalPath.finalContribution; 
+
+    
+    return modifiedPath;
+}
+
+// 特征线检测，需要修改的部分
+FeatureLine FeatureLineIntegrator::IntersectLine(const PathEdge& edge, Point2i pixel) const {
+    // Compute test region around the edge
+    Bounds2f region = ComputeTestRegion(edge, pixel);
+    
+    // Sample nearby pixels in the region (m samples)
     std::vector<Point2i> samplePixels = SampleRegion(region, testSamples);
     
     FeatureLine closest;
@@ -3794,18 +3837,29 @@ FeatureLine FeatureLineIntegrator::IntersectLine(const RayDifferential& ray, Poi
         if (!paths) continue;
         
         for (const PathSample& pathSample : *paths) {
-            // Check if this path satisfies the line metric
-            pstd::optional<ShapeIntersection> si = Intersect(pathSample.ray);
-            if (!si) continue;
-            
-            pstd::optional<ShapeIntersection> rayIntersection = Intersect(ray);
-            if (!rayIntersection) continue;
-            
-            if (SatisfiesLineMetric(si->intr, rayIntersection->intr)) {
-                // Compute line position and depth
-                Float t = Distance(ray.o, si->intr.p());
-                if (t < closest.depth) {
-                    closest = FeatureLine(si->intr.p(), t, pathSample.L);
+            // Check vertices in this path sample
+            for (const PathVertex& vertex : pathSample.vertices) {
+                // Simple line metric test - can be replaced with more sophisticated version
+                PathVertex edgeEndVertex;
+                if (!pathSample.vertices.empty()) {
+                    // Use the first vertex as reference for now
+                    edgeEndVertex = pathSample.vertices[0];
+                }
+                
+                if (SatisfiesLineMetric(edgeEndVertex, vertex)) {
+                    // Project vertex onto edge to find intersection point
+                    Vector3f edgeVec = edge.end - edge.start;
+                    Vector3f toVertex = vertex.position - edge.start;
+                    Float t = Clamp(Dot(toVertex, edgeVec) / Dot(edgeVec, edgeVec), 0.0f, 1.0f);
+                    Point3f projectedPoint = edge.start + t * edgeVec;
+                    
+                    Float depth = Distance(edge.start, projectedPoint);
+                    
+                    if (depth < closest.depth) {
+                        // Use vertex color as feature line color
+                        SampledSpectrum featureColor(0.08f); // Default bright color for feature lines
+                        closest = FeatureLine(projectedPoint, depth, featureColor);
+                    }
                 }
             }
         }
@@ -3814,50 +3868,132 @@ FeatureLine FeatureLineIntegrator::IntersectLine(const RayDifferential& ray, Poi
     return closest;
 }
 
-// Algorithm 2: path modification
-RayDifferential FeatureLineIntegrator::ModifyPath(const RayDifferential& originalRay, 
-                                                  Point2i pixel,
-                                                  const SampledWavelengths& lambda) const {
-    RayDifferential modifiedRay = originalRay;
-
-    FeatureLine line = IntersectLine(originalRay, pixel, lambda);
-
-    if (line.IsValid()) {
-        Vector3f direction = Normalize(line.position - originalRay.o);
-        Float distance = Distance(originalRay.o, line.position);
+// 路径追踪的实现，应该是对的（应该
+PathSample FeatureLineIntegrator::TracePath(const RayDifferential& ray, 
+                                            SampledWavelengths& lambda,
+                                           Sampler sampler, 
+                                           ScratchBuffer& scratchBuffer) const {
+    PathSample path(ray, lambda);
+    
+    SampledSpectrum beta(1.0f);
+    RayDifferential currentRay = ray;
+    int depth = 0;
+    Float etaScale = 1;
+    bool specularBounce = false;
+    
+    while (depth < maxDepth) {
+        pstd::optional<ShapeIntersection> si = Intersect(currentRay);
         
-        modifiedRay.d = direction;
+        if (!si) {
+            // Hit environment - add environment contribution
+            SampledSpectrum Le(0.0f);
+            for (const auto &light : infiniteLights) {
+                Le += light.Le(currentRay, lambda);
+            }
+            path.finalContribution += beta * Le;
+            break;
+        }
 
-        if (modifiedRay.hasDifferentials) {
-            modifiedRay.rxDirection = direction;
-            modifiedRay.ryDirection = direction;
-            modifiedRay.rxOrigin = originalRay.o;
-            modifiedRay.ryOrigin = originalRay.o;
+        SurfaceInteraction &isect = si->intr;
+        
+        // Add vertex to path
+        path.AddVertex(isect, beta);
+        
+        // Add emission if any
+        SampledSpectrum Le = isect.Le(-currentRay.d, lambda);
+        if (Le) {
+            path.finalContribution += beta * Le;
+        }
+        
+        // Get BSDF
+        BSDF bsdf = isect.GetBSDF(currentRay, lambda, camera, scratchBuffer, sampler);
+        if (!bsdf) {
+            specularBounce = true;
+            isect.SkipIntersection(&currentRay, si->tHit);
+            continue;
+        }
+        
+        if (regularize) {
+            bsdf.Regularize();
+        }
+        
+        depth++;
+        
+        // Sample direct illumination for non-specular surfaces
+        if (IsNonSpecular(bsdf.Flags())) {
+            SampledSpectrum Ld = SampleLd(isect, &bsdf, const_cast<SampledWavelengths&>(lambda), sampler);
+            path.finalContribution += beta * Ld;
+        }
+        
+        // Sample BSDF for next direction
+        Vector3f wo = -currentRay.d;
+        Float u = sampler.Get1D();
+        pstd::optional<BSDFSample> bs = bsdf.Sample_f(wo, u, sampler.Get2D());
+        if (!bs) break;
+        
+        beta *= bs->f * AbsDot(bs->wi, isect.shading.n) / bs->pdf;
+        specularBounce = bs->IsSpecular();
+        if (bs->IsTransmission()) etaScale *= Sqr(bs->eta);
+        
+        currentRay = isect.SpawnRay(currentRay, bsdf, bs->wi, bs->flags, bs->eta);
+        
+        // Russian roulette
+        SampledSpectrum rrBeta = beta * etaScale;
+        if (rrBeta.MaxComponentValue() < 1 && depth > 1) {
+            Float q = std::max<Float>(0, 1 - rrBeta.MaxComponentValue());
+            if (sampler.Get1D() < q) break;
+            beta /= 1 - q;
         }
     }
-
-    return modifiedRay;
+    
+    return path;
 }
 
-// 应该要改
-// Check if two intersections satisfy the line metric
-bool FeatureLineIntegrator::SatisfiesLineMetric(const SurfaceInteraction& intersection1,
-                                              const SurfaceInteraction& intersection2) const {
-    // Simple normal discontinuity test
-    Float normalDot = Dot(intersection1.n, intersection2.n);
+SampledSpectrum FeatureLineIntegrator::Li(RayDifferential ray, SampledWavelengths &lambda,
+                                        Sampler sampler, ScratchBuffer &scratchBuffer,
+                                        VisibleSurface *visibleSurface) const {
+    // For single ray queries, just do standard path tracing
+    PathSample path = TracePath(ray, lambda, sampler, scratchBuffer);
+    return path.finalContribution;
+}
+
+// Helper functions implementation
+// 这个 normal 或许需要计算？
+PathVertex FeatureLineIntegrator::CreateEmissionVertex(const FeatureLine& line) const {
+    // Create a simple emission vertex
+    PathVertex vertex;
+    vertex.position = line.position;
+    vertex.normal = Vector3f(0, 1, 0); // Default normal
+    vertex.throughput = line.color;
+    return vertex;
+}
+
+void FeatureLineIntegrator::RemoveEdgesAfter(PathSample& path, int edgeIndex) const {
+    if (edgeIndex + 1 < path.edges.size()) {
+        path.edges.erase(path.edges.begin() + edgeIndex + 1, path.edges.end());
+    }
+    
+    // Also remove corresponding vertices
+    int vertexIndex = path.edges[edgeIndex].vertexIndex;
+    if (vertexIndex + 1 < path.vertices.size()) {
+        path.vertices.erase(path.vertices.begin() + vertexIndex + 1, path.vertices.end());
+    }
+}
+
+bool FeatureLineIntegrator::SatisfiesLineMetric(const PathVertex& vertex1, 
+                                              const PathVertex& vertex2) const {
+    // Simple normal discontinuity test - you can replace this with more sophisticated metrics
+    Float normalDot = Dot(vertex1.normal, vertex2.normal);
     return normalDot < (1.0f - lineThreshold);
 }
 
-// Compute test region for feature line detection
-Bounds2f FeatureLineIntegrator::ComputeTestRegion(const RayDifferential& ray, 
-                                                Point2i pixel) const {
+Bounds2f FeatureLineIntegrator::ComputeTestRegion(const PathEdge& edge, Point2i pixel) const {
     // Simple rectangular region around the pixel
     Float radius = 3.0f; // pixels
     return Bounds2f(Point2f(pixel.x - radius, pixel.y - radius),
                    Point2f(pixel.x + radius, pixel.y + radius));
 }
 
-// Sample pixels in the test region
 std::vector<Point2i> FeatureLineIntegrator::SampleRegion(const Bounds2f& region, 
                                                        int numSamples) const {
     std::vector<Point2i> samples;
@@ -3872,7 +4008,6 @@ std::vector<Point2i> FeatureLineIntegrator::SampleRegion(const Bounds2f& region,
         Point2f p = Lerp(u, region.pMin, region.pMax);
         Point2i pixel(int(p.x), int(p.y));
         
-        // Ensure pixel is within bounds
         if (Inside(pixel, pixelBounds)) {
             samples.push_back(pixel);
         }
@@ -3881,124 +4016,6 @@ std::vector<Point2i> FeatureLineIntegrator::SampleRegion(const Bounds2f& region,
     return samples;
 }
 
-// Standard path tracing implementation (similar to PathIntegrator::Li)
-SampledSpectrum FeatureLineIntegrator::StandardLi(RayDifferential ray, 
-                                                SampledWavelengths &lambda,
-                                                Sampler sampler, 
-                                                ScratchBuffer &scratchBuffer,
-                                                VisibleSurface *visibleSurf) const {
-    SampledSpectrum L(0.f), beta(1.f);
-    int depth = 0;
-    Float p_b, etaScale = 1;
-    bool specularBounce = false, anyNonSpecularBounces = false;
-    LightSampleContext prevIntrCtx;
-
-    while (true) {
-        pstd::optional<ShapeIntersection> si = Intersect(ray);
-        
-        if (!si) {
-            // Add infinite light contribution
-            for (const auto &light : infiniteLights) {
-                SampledSpectrum Le = light.Le(ray, lambda);
-                if (depth == 0 || specularBounce)
-                    L += beta * Le;
-                else {
-                    Float p_l = lightSampler.PMF(prevIntrCtx, light) *
-                               light.PDF_Li(prevIntrCtx, ray.d, true);
-                    Float w_b = PowerHeuristic(1, p_b, 1, p_l);
-                    L += beta * w_b * Le;
-                }
-            }
-            break;
-        }
-
-        // Add emission from surface
-        SampledSpectrum Le = si->intr.Le(-ray.d, lambda);
-        if (Le) {
-            if (depth == 0 || specularBounce)
-                L += beta * Le;
-            else {
-                Light areaLight(si->intr.areaLight);
-                Float p_l = lightSampler.PMF(prevIntrCtx, areaLight) *
-                           areaLight.PDF_Li(prevIntrCtx, ray.d, true);
-                Float w_l = PowerHeuristic(1, p_b, 1, p_l);
-                L += beta * w_l * Le;
-            }
-        }
-
-        SurfaceInteraction &isect = si->intr;
-        BSDF bsdf = isect.GetBSDF(ray, lambda, camera, scratchBuffer, sampler);
-        if (!bsdf) {
-            specularBounce = true;
-            isect.SkipIntersection(&ray, si->tHit);
-            continue;
-        }
-
-        if (depth == 0 && visibleSurf) {
-            // Set up visible surface (similar to PathIntegrator)
-            constexpr int nRhoSamples = 16;
-            const Float ucRho[nRhoSamples] = {
-                0.75741637, 0.37870818, 0.7083487, 0.18935409, 0.9149363, 0.35417435,
-                0.5990858,  0.09467703, 0.8578725, 0.45746812, 0.686759,  0.17708716,
-                0.9674518,  0.2995429,  0.5083201, 0.047338516};
-            const Point2f uRho[nRhoSamples] = {
-                Point2f(0.855985, 0.570367), Point2f(0.381823, 0.851844),
-                Point2f(0.285328, 0.764262), Point2f(0.733380, 0.114073),
-                Point2f(0.542663, 0.344465), Point2f(0.127274, 0.414848),
-                Point2f(0.964700, 0.947162), Point2f(0.594089, 0.643463),
-                Point2f(0.095109, 0.170369), Point2f(0.825444, 0.263359),
-                Point2f(0.429467, 0.454469), Point2f(0.244460, 0.816459),
-                Point2f(0.756135, 0.731258), Point2f(0.516165, 0.152852),
-                Point2f(0.180888, 0.214174), Point2f(0.898579, 0.503897)};
-
-            SampledSpectrum albedo = bsdf.rho(isect.wo, ucRho, uRho);
-            *visibleSurf = VisibleSurface(isect, albedo, lambda);
-        }
-
-        if (regularize && anyNonSpecularBounces) {
-            bsdf.Regularize();
-        }
-
-        if (depth++ == maxDepth)
-            break;
-
-        // Sample direct illumination
-        if (IsNonSpecular(bsdf.Flags())) {
-            SampledSpectrum Ld = SampleLd(isect, &bsdf, lambda, sampler);
-            L += beta * Ld;
-        }
-
-        // Sample BSDF for next direction
-        Vector3f wo = -ray.d;
-        Float u = sampler.Get1D();
-        pstd::optional<BSDFSample> bs = bsdf.Sample_f(wo, u, sampler.Get2D());
-        if (!bs)
-            break;
-
-        beta *= bs->f * AbsDot(bs->wi, isect.shading.n) / bs->pdf;
-        p_b = bs->pdfIsProportional ? bsdf.PDF(wo, bs->wi) : bs->pdf;
-        specularBounce = bs->IsSpecular();
-        anyNonSpecularBounces |= !bs->IsSpecular();
-        if (bs->IsTransmission())
-            etaScale *= Sqr(bs->eta);
-        prevIntrCtx = si->intr;
-
-        ray = isect.SpawnRay(ray, bsdf, bs->wi, bs->flags, bs->eta);
-
-        // Russian roulette
-        SampledSpectrum rrBeta = beta * etaScale;
-        if (rrBeta.MaxComponentValue() < 1 && depth > 1) {
-            Float q = std::max<Float>(0, 1 - rrBeta.MaxComponentValue());
-            if (sampler.Get1D() < q)
-                break;
-            beta /= 1 - q;
-        }
-    }
-
-    return L;
-}
-
-// Direct lighting sampling (similar to PathIntegrator::SampleLd)
 SampledSpectrum FeatureLineIntegrator::SampleLd(const SurfaceInteraction &intr, 
                                                const BSDF *bsdf,
                                                SampledWavelengths &lambda, 
@@ -4054,9 +4071,8 @@ std::unique_ptr<FeatureLineIntegrator> FeatureLineIntegrator::Create(
 
 std::string FeatureLineIntegrator::ToString() const {
     return StringPrintf("[ FeatureLineIntegrator maxDepth: %d testSamples: %d "
-                       "lineThreshold: %f lightSampler: %s regularize: %s ]",
-                       maxDepth, testSamples, lineThreshold, 
-                       lightSampler, regularize);
+                       "lineThreshold: %f regularize: %s ]",
+                       maxDepth, testSamples, lineThreshold, regularize);
 }
 
 std::unique_ptr<Integrator> Integrator::Create(
