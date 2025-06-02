@@ -29,13 +29,16 @@ pbrt::SampledSpectrum getAlbedo(const pbrt::SurfaceInteraction &isect,
     using MatPtr = std::remove_reference_t<decltype(isect.material)>;
     const uint32_t tag = isect.material.Tag();
 
-    if (tag == MatPtr::TypeIndex<pbrt::DiffuseMaterial>()) {
-        if (auto *mat = isect.material.CastOrNullptr<pbrt::DiffuseMaterial>())
+if (tag == MatPtr::TypeIndex<pbrt::DiffuseMaterial>()) {
+        if (auto *mat = isect.material.CastOrNullptr<pbrt::DiffuseMaterial>()) {
             return mat->GetReflectance().Evaluate(isect, lambda);
+        }
     } else if (tag == MatPtr::TypeIndex<pbrt::CoatedDiffuseMaterial>()) {
-        if (auto *mat = isect.material.CastOrNullptr<pbrt::CoatedDiffuseMaterial>())
+        if (auto *mat = isect.material.CastOrNullptr<pbrt::CoatedDiffuseMaterial>()) {
             return mat->GetReflectance().Evaluate(isect, lambda);
+        }
     }
+    
     // 可以添加更多类型材质...
 
     return pbrt::SampledSpectrum(0.f);
@@ -61,7 +64,7 @@ bool satisfiesMetric(const pbrt::SurfaceInteraction& q_isect,
                      const pbrt::Ray& edge,
                      const pbrt::SampledWavelengths &lambda) {
 
-    // 1. MeshID: 好像深度就可以替代了？
+    // 1. MeshID: 如何获取？
 
     // 2. Albedo
     const pbrt::Float albedo_threshold = 0.1f;
@@ -76,7 +79,7 @@ bool satisfiesMetric(const pbrt::SurfaceInteraction& q_isect,
     }
 
     // 3. Normal
-    const pbrt::Float normal_threshold = 0.08f;
+    const pbrt::Float normal_threshold = 0.08f; //0.08
     if (1.f - pbrt::Dot(q_isect.n, s_isect.n) > normal_threshold) {
         return true;
     }
@@ -94,13 +97,14 @@ bool satisfiesMetric(const pbrt::SurfaceInteraction& q_isect,
         abs_dot_edgeDir_nClosest = 1e-6f;
     }
 
-    const pbrt::Float beta = 2.0f;
+    const pbrt::Float beta = 2.0f; //2.0
     pbrt::Float t_depth = beta * std::min(dq, ds) * dist_q_s / abs_dot_edgeDir_nClosest;
 
     if (std::abs(ds - dq) > t_depth) {
         return true;
     }
 
+    //return true;
     return false;
 }
 
@@ -146,7 +150,7 @@ pstd::optional<FeatureLineInfo> Intersect(
     pstd::optional<FeatureLineInfo> closestLineSoFar;
     pbrt::Float edge_length = pbrt::Distance(edge.o, queryInteraction.p());
 
-    // 计算每像素宽度 & 特征线投影半径范围 (这部分不变)
+    // 计算每像素宽度 & 特征线投影半径范围
     pbrt::Float fov = getCameraFOV(camera);
     pbrt::Float tan_half_fov = tan(pbrt::Radians(fov * 0.5f));
     pbrt::Float p_width = (2.f * tan_half_fov) / camera.GetFilm().FullResolution().y;
