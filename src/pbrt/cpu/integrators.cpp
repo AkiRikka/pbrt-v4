@@ -3820,8 +3820,9 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
             RemoveEdgesAfter(modifiedPath, edgeIndex);
 
             // 计算最终贡献
-            if (insertIndex > 1) {
-                modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * fl_info.color;
+            if (insertIndex > 0) {
+                //modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * fl_info.color;
+                modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f); // 暂时禁用反射
             } else {
                 modifiedPath.finalContribution = fl_info.color;
             }
