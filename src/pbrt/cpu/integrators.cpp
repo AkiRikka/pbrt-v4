@@ -3652,7 +3652,7 @@ std::string FunctionIntegrator::ToString() const {
 FeatureLineIntegrator::FeatureLineIntegrator(
     int maxDepth, Camera camera, Sampler sampler, Primitive aggregate,
     std::vector<Light> lights, const std::string &lightSampleStrategy,
-    bool regularize, int testSamples, Float lineThreshold,
+    bool regularize, int testSamples,
     Float screenSpaceLineWidth_param,
     const SampledSpectrum& userFeatureLineColor_param)
     : RayIntegrator(camera, sampler, aggregate, lights),
@@ -3660,7 +3660,6 @@ FeatureLineIntegrator::FeatureLineIntegrator(
       lightSampler(LightSampler::Create(lightSampleStrategy, lights, Allocator())),
       regularize(regularize),
       testSamples(testSamples),
-      lineThreshold(lineThreshold),
       screenSpaceLineWidth(screenSpaceLineWidth_param),
       userFeatureLineColor(userFeatureLineColor_param) {} 
 
@@ -3776,17 +3775,19 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
     PathSample modifiedPath = originalPath; // Copy original path
     bool featureLineFound = false;
     Float accumulated_path_length = 0.f;
-    
+    //printf("1");
     // Iterate through edges starting from sensor (camera)
     for (int edgeIndex = 0; edgeIndex < originalPath.edges.size(); ++edgeIndex) {
-        const PathEdge& edge = originalPath.edges[edgeIndex];
+        //modifiedPath.finalContribution = pbrt::SampledSpectrum(0.0f);
+        //printf("2");
         
+        const PathEdge& edge = originalPath.edges[edgeIndex];
+
         pbrt::Ray sdk_edge_ray(edge.start, edge.direction);
         sdk_edge_ray.time = originalPath.initialRay.time;
 
         const PathVertex& original_end_vertex = originalPath.vertices[edge.vertexIndex];
         const pbrt::SurfaceInteraction& query_interaction = original_end_vertex.intersection;
-
         pstd::optional<feature_line::FeatureLineInfo> opt_fl_info = feature_line::Intersect(
             sdk_edge_ray,
             query_interaction,
@@ -3798,13 +3799,11 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
             this->screenSpaceLineWidth,
             this->testSamples
         );
-        // Algorithm 3: Feature line intersection test
-        //FeatureLine line = IntersectLine(edge, pixel);
 
         if (opt_fl_info) {
             feature_line::FeatureLineInfo fl_info = opt_fl_info.value();
             featureLineFound = true;
-  
+            
             // Create emission vertex at feature line position
             PathVertex emissionVertex = CreateEmissionVertex(fl_info);
 
@@ -3821,18 +3820,8 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
             RemoveEdgesAfter(modifiedPath, edgeIndex);
 
             // 计算最终贡献
-            if (insertIndex > 0) {
+            if (insertIndex > 1) {
                 modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * fl_info.color;
-                // 为了debug写的
-                /*
-                Float red_spectrum[NSpectrumSamples];
-                for (int i = 0; i < NSpectrumSamples; ++i) {
-                Float lambda = Lerp(Float(i) / (NSpectrumSamples - 1), 400.0f, 700.0f);
-                red_spectrum[i] = (lambda >= 600.0f && lambda <= 700.0f) ? 0.05f : 0.005f;
-                }
-                SampledSpectrum darkRed(pstd::span<const Float>(red_spectrum, NSpectrumSamples));
-                modifiedPath.finalContribution = darkRed;
-                */
             } else {
                 modifiedPath.finalContribution = fl_info.color;
             }
@@ -3850,66 +3839,14 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
 
             break; // Stop at first feature line intersection
         }
-
         accumulated_path_length += edge.length;
     }
-    
-    // 这里如果没检测到 featureline，应该不会修改 modifiedPath 的值？可能是现在的 Interest 有问题导致的？
-    // modifiedPath.finalContribution = originalPath.finalContribution; 
-    if (!featureLineFound) {
-    modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f);
-    }
+
+    // modifiedPath.finalContribution = originalPath.finalContribution;
+    if (!featureLineFound){modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f);}
 
     return modifiedPath;
 }
-
-// 特征线检测，需要修改的部分
-/*
-FeatureLine FeatureLineIntegrator::IntersectLine(const PathEdge& edge, Point2i pixel) const {
-    // Compute test region around the edge
-    Bounds2f region = ComputeTestRegion(edge, pixel);
-    
-    // Sample nearby pixels in the region (m samples)
-    std::vector<Point2i> samplePixels = SampleRegion(region, testSamples);
-    
-    FeatureLine closest;
-    
-    for (Point2i samplePixel : samplePixels) {
-        const std::vector<PathSample>* paths = pathCache.GetPaths(samplePixel);
-        if (!paths) continue;
-        
-        for (const PathSample& pathSample : *paths) {
-            // Check vertices in this path sample
-            for (const PathVertex& vertex : pathSample.vertices) {
-                // Simple line metric test - can be replaced with more sophisticated version
-                PathVertex edgeEndVertex;
-                if (!pathSample.vertices.empty()) {
-                    // Use the first vertex as reference for now
-                    edgeEndVertex = pathSample.vertices[0];
-                }
-                
-                if (SatisfiesLineMetric(edgeEndVertex, vertex)) {
-                    // Project vertex onto edge to find intersection point
-                    Vector3f edgeVec = edge.end - edge.start;
-                    Vector3f toVertex = vertex.position - edge.start;
-                    Float t = Clamp(Dot(toVertex, edgeVec) / Dot(edgeVec, edgeVec), 0.0f, 1.0f);
-                    Point3f projectedPoint = edge.start + t * edgeVec;
-                    
-                    Float depth = Distance(edge.start, projectedPoint);
-                    
-                    if (depth < closest.depth) {
-                        // Use vertex color as feature line color
-                        SampledSpectrum featureColor(0.08f); // Default bright color for feature lines
-                        closest = FeatureLine(projectedPoint, depth, featureColor);
-                    }
-                }
-            }
-        }
-    }
-    
-    return closest;
-}
-*/
 
 // 路径追踪的实现，应该是对的（应该
 PathSample FeatureLineIntegrator::TracePath(const RayDifferential& ray, 
@@ -4023,44 +3960,6 @@ void FeatureLineIntegrator::RemoveEdgesAfter(PathSample& path, int edgeIndex) co
     }
 }
 
-/*
-bool FeatureLineIntegrator::SatisfiesLineMetric(const PathVertex& vertex1, 
-                                              const PathVertex& vertex2) const {
-    // Simple normal discontinuity test - you can replace this with more sophisticated metrics
-    Float normalDot = Dot(vertex1.normal, vertex2.normal);
-    return normalDot < (1.0f - lineThreshold);
-}
-
-Bounds2f FeatureLineIntegrator::ComputeTestRegion(const PathEdge& edge, Point2i pixel) const {
-    // Simple rectangular region around the pixel
-    Float radius = 3.0f; // pixels
-    return Bounds2f(Point2f(pixel.x - radius, pixel.y - radius),
-                   Point2f(pixel.x + radius, pixel.y + radius));
-}
-
-std::vector<Point2i> FeatureLineIntegrator::SampleRegion(const Bounds2f& region, 
-                                                       int numSamples) const {
-    std::vector<Point2i> samples;
-    samples.reserve(numSamples);
-    
-    Bounds2i pixelBounds = camera.GetFilm().PixelBounds();
-    
-    for (int i = 0; i < numSamples; ++i) {
-        Float u = Float(i) / Float(numSamples - 1);
-        Float v = Float(i % 4) / 4.0f; // Simple 2D sampling
-        
-        Point2f p = Lerp(u, region.pMin, region.pMax);
-        Point2i pixel(int(p.x), int(p.y));
-        
-        if (Inside(pixel, pixelBounds)) {
-            samples.push_back(pixel);
-        }
-    }
-    
-    return samples;
-}
-*/
-
 SampledSpectrum FeatureLineIntegrator::SampleLd(const SurfaceInteraction &intr, 
                                                const BSDF *bsdf,
                                                SampledWavelengths &lambda, 
@@ -4107,17 +4006,17 @@ std::unique_ptr<FeatureLineIntegrator> FeatureLineIntegrator::Create(
     std::string lightStrategy = parameters.GetOneString("lightsampler", "bvh");
     bool regularize = parameters.GetOneBool("regularize", false);
     int testSamples = parameters.GetOneInt("testsamples", 16);
-    Float lineThreshold = parameters.GetOneFloat("linethreshold", 0.1f);
-    
+    Float screenSpaceLineWidth = parameters.GetOneFloat("lineswidth", 1.0f);
+
     return std::make_unique<FeatureLineIntegrator>(
         maxDepth, camera, sampler, aggregate, lights, lightStrategy, 
-        regularize, testSamples, lineThreshold);
+        regularize, testSamples, screenSpaceLineWidth);
 }
 
 std::string FeatureLineIntegrator::ToString() const {
     return StringPrintf("[ FeatureLineIntegrator maxDepth: %d testSamples: %d "
-                       "lineThreshold: %f regularize: %s ]",
-                       maxDepth, testSamples, lineThreshold, regularize);
+                       "LineWidth: %f regularize: %s ]",
+                       maxDepth, testSamples, screenSpaceLineWidth, regularize);
 }
 
 std::unique_ptr<Integrator> Integrator::Create(

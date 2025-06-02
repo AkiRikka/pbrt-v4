@@ -63,9 +63,10 @@ bool satisfiesMetric(const pbrt::SurfaceInteraction& q_isect,
                      const pbrt::SurfaceInteraction& s_isect,
                      const pbrt::Ray& edge,
                      const pbrt::SampledWavelengths &lambda) {
-
+                   
     // 1. MeshID: 如何获取？
-
+    
+    
     // 2. Albedo
     const pbrt::Float albedo_threshold = 0.1f;
     pbrt::SampledSpectrum queryAlbedo = getAlbedo(q_isect, lambda);
@@ -77,13 +78,15 @@ bool satisfiesMetric(const pbrt::SurfaceInteraction& q_isect,
     if ((std::abs(q_rgb.r - s_rgb.r) + std::abs(q_rgb.g - s_rgb.g) + std::abs(q_rgb.b - s_rgb.b)) / 3.f > albedo_threshold) {
         return true;
     }
+    
 
     // 3. Normal
     const pbrt::Float normal_threshold = 0.08f; //0.08
     if (1.f - pbrt::Dot(q_isect.n, s_isect.n) > normal_threshold) {
         return true;
     }
-
+    
+    
     // 4. Depth
     pbrt::Float dq = pbrt::Distance(edge.o, q_isect.p());
     pbrt::Float ds = pbrt::Distance(edge.o, s_isect.p());
@@ -103,8 +106,9 @@ bool satisfiesMetric(const pbrt::SurfaceInteraction& q_isect,
     if (std::abs(ds - dq) > t_depth) {
         return true;
     }
+    
 
-    //return true;
+    //return true; 
     return false;
 }
 
@@ -158,6 +162,19 @@ pstd::optional<FeatureLineInfo> Intersect(
     pbrt::Float radius_end = (path_distance + edge_length) * p_width * screenSpaceLineWidth;
     pbrt::Frame edgeFrame = pbrt::Frame::FromZ(pbrt::Normalize(edge.d));
 
+    /*
+    // Debug
+    pbrt::Point3f featureCandidatePoint = pbrt::Point3f(1.0f, 1.0f, 1.0f);
+    // 计算候选点沿查询光线方向的深度
+    pbrt::Float current_depth = 1.0f;
+    closestLineSoFar = FeatureLineInfo{
+        featureCandidatePoint,             // 存储特征点位置
+        current_depth,                     // 深度值
+        pbrt::SampledSpectrum(0.0f)        // 默认颜色
+    };
+    */
+    
+
     for (int i = 0; i < numSamples; ++i) {
         pbrt::Point2f u_disk = sampler.Get2D();
         pbrt::Point2f pDisk = pbrt::SampleUniformDiskConcentric(u_disk);
@@ -172,28 +189,49 @@ pstd::optional<FeatureLineInfo> Intersect(
 
         pbrt::SurfaceInteraction sampleInteraction;
         pstd::optional<pbrt::ShapeIntersection> shapeSi = aggregate.Intersect(sampleRay);
+        
+        if (shapeSi.has_value()) {
+        sampleInteraction = shapeSi->intr;
+        if (satisfiesMetric(queryInteraction, sampleInteraction, edge, lambda)) {
+                pbrt::Point3f featureCandidatePoint = ClosestPointOnSegmentToRay(
+                    queryInteraction.p(), sampleInteraction.p(), edge);
 
+                // 计算候选点沿查询光线方向的深度
+                pbrt::Float t_feature = pbrt::Dot(featureCandidatePoint - edge.o, edge.d);
+
+                pbrt::Float current_depth = t_feature;
+                        if (!closestLineSoFar.has_value() || current_depth < closestLineSoFar->depth) {
+                            closestLineSoFar = FeatureLineInfo{
+                                featureCandidatePoint,             // 存储特征点位置
+                                current_depth,                     // 深度值
+                                pbrt::SampledSpectrum(0.4f)        // 默认颜色
+                            };
+                        }
+                }
+        }
+        /*
         if (shapeSi.has_value()) {
             sampleInteraction = shapeSi->intr;
             if (satisfiesMetric(queryInteraction, sampleInteraction, edge, lambda)) {
                 pbrt::Point3f featureCandidatePoint = ClosestPointOnSegmentToRay(
                     queryInteraction.p(), sampleInteraction.p(), edge);
-                
+
                 // 计算候选点沿查询光线方向的深度
                 pbrt::Float t_feature = pbrt::Dot(featureCandidatePoint - edge.o, edge.d);
 
-                if (t_feature > 1e-5f && t_feature < edge_length - 1e-5f) {
-                    pbrt::Float current_depth = t_feature;
-                    if (!closestLineSoFar.has_value() || current_depth < closestLineSoFar->depth) {
-                        closestLineSoFar = FeatureLineInfo{
-                            featureCandidatePoint,             // 存储特征点位置
-                            current_depth,                     // 深度值
-                            pbrt::SampledSpectrum(0.0f)        // 默认颜色
-                        };
+                    if (t_feature > 1e-5f && t_feature < edge_length - 1e-5f) {
+                        pbrt::Float current_depth = t_feature;
+                        if (!closestLineSoFar.has_value() || current_depth < closestLineSoFar->depth) {
+                            closestLineSoFar = FeatureLineInfo{
+                                featureCandidatePoint,             // 存储特征点位置
+                                current_depth,                     // 深度值
+                                pbrt::SampledSpectrum(0.0f)        // 默认颜色
+                            };
+                        }
                     }
                 }
             }
-        }
+        */
     }
     return closestLineSoFar;
 }
