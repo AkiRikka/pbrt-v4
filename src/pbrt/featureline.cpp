@@ -181,6 +181,7 @@ pstd::optional<FeatureLineInfo> Intersect(
         pbrt::Vector3f v_on_end_disk_local = pbrt::Vector3f(pDisk.x, pDisk.y, 0) * radius_end;
         pbrt::Point3f sample_target_world = queryInteraction.p() + edgeFrame.FromLocal(v_on_end_disk_local);
         
+        
         // 构造采样射线
         pbrt::Ray sampleRay(sample_o_world, pbrt::Normalize(sample_target_world - sample_o_world));
         sampleRay.o += sampleRay.d * 1e-4f; // 对样本光线起点进行偏移，防止自相交
@@ -188,8 +189,9 @@ pstd::optional<FeatureLineInfo> Intersect(
         pbrt::SurfaceInteraction sampleInteraction;
         pstd::optional<pbrt::ShapeIntersection> shapeSi = aggregate.Intersect(sampleRay);
         
+        /*
         if (shapeSi.has_value()) {
-        pbrt::SurfaceInteraction sampleInteraction = shapeSi->intr; // 注意：这里用新的局部变量
+        pbrt::SurfaceInteraction sampleInteraction = shapeSi->intr;
             if (satisfiesMetric(queryInteraction, sampleInteraction, edge, lambda)) {
 
                     pbrt::Point3f point_to_project = sampleInteraction.p();
@@ -213,6 +215,26 @@ pstd::optional<FeatureLineInfo> Intersect(
                 }
             }
         }
+        */
+       if (shapeSi.has_value()) {
+            sampleInteraction = shapeSi->intr;
+            if (satisfiesMetric(queryInteraction, sampleInteraction, edge, lambda)) {
+                pbrt::Point3f featureCandidatePoint = ClosestPointOnSegmentToRay(
+                    queryInteraction.p(), sampleInteraction.p(), edge);
+
+                // 计算候选点沿查询光线方向的深度
+                pbrt::Float t_feature = pbrt::Dot(featureCandidatePoint - edge.o, edge.d);
+
+                    pbrt::Float current_depth = t_feature;
+                    if (!closestLineSoFar.has_value() || current_depth < closestLineSoFar->depth) {
+                        closestLineSoFar = FeatureLineInfo{
+                            featureCandidatePoint,             // 存储特征点位置
+                            current_depth,                     // 深度值
+                            pbrt::SampledSpectrum(0.0f)        // 默认颜色
+                        };
+                    }
+                }
+            }
         /*
         if (shapeSi.has_value()) {
             sampleInteraction = shapeSi->intr;

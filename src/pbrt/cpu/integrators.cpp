@@ -3821,8 +3821,8 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
 
             // 计算最终贡献
             if (insertIndex > 0) {
-                //modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * fl_info.color;
-                modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f); // 暂时禁用反射
+                modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * fl_info.color;
+                // modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f); // 暂时禁用反射
             } else {
                 modifiedPath.finalContribution = fl_info.color;
             }
@@ -3844,7 +3844,7 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
     }
 
     // modifiedPath.finalContribution = originalPath.finalContribution;
-    if (!featureLineFound){modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f);}
+    // if (!featureLineFound){modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f);}
 
     return modifiedPath;
 }
@@ -4006,8 +4006,8 @@ std::unique_ptr<FeatureLineIntegrator> FeatureLineIntegrator::Create(
     int maxDepth = parameters.GetOneInt("maxdepth", 5);
     std::string lightStrategy = parameters.GetOneString("lightsampler", "bvh");
     bool regularize = parameters.GetOneBool("regularize", false);
-    int testSamples = parameters.GetOneInt("testsamples", 16);
-    Float screenSpaceLineWidth = parameters.GetOneFloat("lineswidth", 1.0f);
+    int testSamples = parameters.GetOneInt("testsamples", 32);
+    Float screenSpaceLineWidth = parameters.GetOneFloat("lineswidth", 2.0f);
 
     return std::make_unique<FeatureLineIntegrator>(
         maxDepth, camera, sampler, aggregate, lights, lightStrategy, 
