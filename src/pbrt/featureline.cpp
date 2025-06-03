@@ -38,11 +38,15 @@ if (tag == MatPtr::TypeIndex<pbrt::DiffuseMaterial>()) {
         if (auto *mat = isect.material.CastOrNullptr<pbrt::CoatedDiffuseMaterial>()) {
             return mat->GetReflectance().Evaluate(isect, lambda);
         }
+    }else if (tag == MatPtr::TypeIndex<pbrt::ConductorMaterial>()) {
+        if (auto *mat = isect.material.CastOrNullptr<pbrt::ConductorMaterial>()) {
+            return pbrt::SampledSpectrum(-1.0f);
+        }
     }
     
     // 可以添加更多类型材质...
 
-    return pbrt::SampledSpectrum(0.f);
+    return pbrt::SampledSpectrum(-1.0f); // 负值代表不支持
 }
 
 // 辅助函数：获取相机的FOV
@@ -67,25 +71,29 @@ bool satisfiesMetric(const pbrt::SurfaceInteraction& q_isect,
                    
     // 1. MeshID: 如何获取？如何替代？
 
-    // 2. Albedo
+
+    // 2. Albedo 材质不全，难以处理一些场景
     const pbrt::Float albedo_threshold = 0.1f;
     pbrt::SampledSpectrum queryAlbedo = getAlbedo(q_isect, lambda);
     pbrt::SampledSpectrum sampleAlbedo = getAlbedo(s_isect, lambda);
 
-    // 转换为 RGB 空间做差值比较
-    pbrt::RGB q_rgb = queryAlbedo.ToRGB(lambda, *pbrt::RGBColorSpace::sRGB);
-    pbrt::RGB s_rgb = sampleAlbedo.ToRGB(lambda, *pbrt::RGBColorSpace::sRGB);
-    if ((std::abs(q_rgb.r - s_rgb.r) + std::abs(q_rgb.g - s_rgb.g) + std::abs(q_rgb.b - s_rgb.b)) / 3.f > albedo_threshold) {
-        return true;
+    if (queryAlbedo != pbrt::SampledSpectrum(-1.0f) && sampleAlbedo != pbrt::SampledSpectrum(-1.0f)) {
+        // 转换为 RGB 空间做差值比较
+        pbrt::RGB q_rgb = queryAlbedo.ToRGB(lambda, *pbrt::RGBColorSpace::sRGB);
+        pbrt::RGB s_rgb = sampleAlbedo.ToRGB(lambda, *pbrt::RGBColorSpace::sRGB);
+        if ((std::abs(q_rgb.r - s_rgb.r) + std::abs(q_rgb.g - s_rgb.g) + std::abs(q_rgb.b - s_rgb.b)) / 3.f > albedo_threshold) {
+            return true;
+        }
     }
     
-    
+
     // 3. Normal
     const pbrt::Float normal_threshold = 0.08f; //0.08
     if (1.f - pbrt::Dot(q_isect.n, s_isect.n) > normal_threshold) {
         return true;
     }
-    
+
+    /*
     // 4. Depth
     pbrt::Float dq = pbrt::Distance(edge.o, q_isect.p());
     pbrt::Float ds = pbrt::Distance(edge.o, s_isect.p());
@@ -105,8 +113,8 @@ bool satisfiesMetric(const pbrt::SurfaceInteraction& q_isect,
     if (std::abs(ds - dq) > t_depth) {
         return true;
     }
-    
-
+    */
+   
     //return true; 
     return false;
 }
@@ -140,6 +148,7 @@ pbrt::Point3f ClosestPointOnSegmentToRay(const pbrt::Point3f &p_q,
 
 // 尝试在边 edge 上找到一条特征线交点（返回最靠近 ray.o 的有效点）
 pstd::optional<FeatureLineInfo> Intersect(
+    const pbrt::Point3f camera_origin,
     const pbrt::Ray &edge,
     const pbrt::SurfaceInteraction &queryInteraction,
     pbrt::Float path_distance,
@@ -158,9 +167,16 @@ pstd::optional<FeatureLineInfo> Intersect(
     pbrt::Float fov = getCameraFOV(camera);
     pbrt::Float tan_half_fov = tan(pbrt::Radians(fov * 0.5f));
     pbrt::Float p_width = (2.f * tan_half_fov) / camera.GetFilm().FullResolution().y;
+    /*
     pbrt::Float radius_start = path_distance * p_width * screenSpaceLineWidth;
     pbrt::Float radius_end = (path_distance + edge_length) * p_width * screenSpaceLineWidth;
+    */
+
+    pbrt::Float radius_start = 0; // Distance(camera_origin, edge.o) * p_width * screenSpaceLineWidth;
+    pbrt::Float radius_end = Distance(camera_origin, edge.o + edge.d * edge_length) * p_width * screenSpaceLineWidth;
+
     pbrt::Frame edgeFrame = pbrt::Frame::FromZ(pbrt::Normalize(edge.d));
+    
 
     /*
     // Debug

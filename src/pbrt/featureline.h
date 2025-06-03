@@ -24,6 +24,7 @@ struct FeatureLineInfo {
 };
 
 pstd::optional<FeatureLineInfo> Intersect(
+    const pbrt::Point3f camera_origin,
     const pbrt::Ray &edge, // 要测试的光线edge
     const pbrt::SurfaceInteraction &queryInteraction, // 此段edge击中的表面交点
     pbrt::Float path_distance, // edge起点到相机的总距离

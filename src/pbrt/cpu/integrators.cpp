@@ -3784,12 +3784,14 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
     PathSample modifiedPath = originalPath; // Copy original path
     bool featureLineFound = false;
     Float accumulated_path_length = 0.f;
+    const pbrt::Point3f camera_origin = originalPath.edges[0].start;
+
     //printf("1");
     // Iterate through edges starting from sensor (camera)
     for (int edgeIndex = 0; edgeIndex < originalPath.edges.size(); ++edgeIndex) {
         //modifiedPath.finalContribution = pbrt::SampledSpectrum(0.0f);
         //printf("2");
-        
+
         const PathEdge& edge = originalPath.edges[edgeIndex];
 
         pbrt::Ray sdk_edge_ray(edge.start, edge.direction);
@@ -3798,6 +3800,7 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
         const PathVertex& original_end_vertex = originalPath.vertices[edge.vertexIndex];
         const pbrt::SurfaceInteraction& query_interaction = original_end_vertex.intersection;
         pstd::optional<feature_line::FeatureLineInfo> opt_fl_info = feature_line::Intersect(
+            camera_origin,
             sdk_edge_ray,
             query_interaction,
             accumulated_path_length,
@@ -3835,31 +3838,20 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
 
             // 计算最终贡献
             if (insertIndex > 0) {
-                // modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * final_fl_color;
-                // modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f); // 暂时禁用反射
-                 modifiedPath.finalContribution = originalPath.finalContribution;
+                modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * final_fl_color;
+                // modifiedPath.finalContribution = final_fl_color; // 暂时禁用反射
+                // modifiedPath.finalContribution = originalPath.finalContribution;
             } else {
                 modifiedPath.finalContribution = final_fl_color;
             }
 
-            // 调试打印最终贡献
-            /*
-            pbrt::RGB finalContribRGB = modifiedPath.finalContribution.ToRGB(originalPath.lambda, *pbrt::RGBColorSpace::sRGB);
-            printf("    FeatureLine Final Contribution: R=%.3f, G=%.3f, B=%.3f (Throughput before: ...)\n",
-                   finalContribRGB.r, finalContribRGB.g, finalContribRGB.b);
-            if (insertIndex > 0 && insertIndex - 1 < modifiedPath.vertices.size()) {
-                 pbrt::RGB throughputRGB = modifiedPath.vertices[insertIndex - 1].throughput.ToRGB(originalPath.lambda, *pbrt::RGBColorSpace::sRGB);
-                 printf("        Throughput before feature: R=%.3f, G=%.3f, B=%.3f\n", throughputRGB.r, throughputRGB.g, throughputRGB.b);
-            }
-            */
-
             break; // Stop at first feature line intersection
         }
-        accumulated_path_length += edge.length;
+        // accumulated_path_length += edge.length;
     }
 
     // modifiedPath.finalContribution = originalPath.finalContribution;
-    // if (!featureLineFound){modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f);}
+    // if (!featureLineFound){modifiedPath.finalContribution = pbrt::SampledSpectrum(0.0f);}
 
     return modifiedPath;
 }
