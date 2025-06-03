@@ -3654,14 +3654,23 @@ FeatureLineIntegrator::FeatureLineIntegrator(
     std::vector<Light> lights, const std::string &lightSampleStrategy,
     bool regularize, int testSamples,
     Float screenSpaceLineWidth_param,
-    const SampledSpectrum& userFeatureLineColor_param)
+    const pbrt::RGB& featureRGB_param,
+    Float intensityScale_param)
     : RayIntegrator(camera, sampler, aggregate, lights),
       maxDepth(maxDepth),
       lightSampler(LightSampler::Create(lightSampleStrategy, lights, Allocator())),
       regularize(regularize),
       testSamples(testSamples),
       screenSpaceLineWidth(screenSpaceLineWidth_param),
-      userFeatureLineColor(userFeatureLineColor_param) {} 
+      userFeatureRGB(featureRGB_param), // 存储RGB值
+      featureLineIntensityScale(intensityScale_param) // 存储缩放因子 
+      { 
+        pbrt::Allocator alloc;
+        this->baseFeatureLineSpectrumObj = Spectrum(Allocator().new_object<pbrt::RGBIlluminantSpectrum>(
+            *pbrt::RGBColorSpace::sRGB, // 使用sRGB色彩空间
+            this->userFeatureRGB
+        ));
+    }
 
 
 // Algorithm 1: Main rendering loop
@@ -3795,6 +3804,7 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
             this->aggregate,
             thread_local_sampler,
             this->camera,
+            this->baseFeatureLineSpectrumObj,
             originalPath.lambda,
             this->screenSpaceLineWidth,
             this->testSamples
@@ -3802,10 +3812,14 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
 
         if (opt_fl_info) {
             feature_line::FeatureLineInfo fl_info = opt_fl_info.value();
+            pbrt::SampledSpectrum final_fl_color = fl_info.color * this->featureLineIntensityScale;
             featureLineFound = true;
-            
+
+            feature_line::FeatureLineInfo fl_info_emission = fl_info; // 复制位置和深度
+            fl_info_emission.color = final_fl_color;
+
             // Create emission vertex at feature line position
-            PathVertex emissionVertex = CreateEmissionVertex(fl_info);
+            PathVertex emissionVertex = CreateEmissionVertex(fl_info_emission);
 
             int insertIndex = edge.vertexIndex;
             PathEdge newEdge(edge.start, fl_info.position, insertIndex);
@@ -3821,10 +3835,11 @@ PathSample FeatureLineIntegrator::ModifyPath(PathSample originalPath, Point2i pi
 
             // 计算最终贡献
             if (insertIndex > 0) {
-                modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * fl_info.color;
+                // modifiedPath.finalContribution = modifiedPath.vertices[insertIndex - 1].throughput * final_fl_color;
                 // modifiedPath.finalContribution = pbrt::SampledSpectrum(1.0f); // 暂时禁用反射
+                 modifiedPath.finalContribution = originalPath.finalContribution;
             } else {
-                modifiedPath.finalContribution = fl_info.color;
+                modifiedPath.finalContribution = final_fl_color;
             }
 
             // 调试打印最终贡献
@@ -4006,12 +4021,16 @@ std::unique_ptr<FeatureLineIntegrator> FeatureLineIntegrator::Create(
     int maxDepth = parameters.GetOneInt("maxdepth", 5);
     std::string lightStrategy = parameters.GetOneString("lightsampler", "bvh");
     bool regularize = parameters.GetOneBool("regularize", false);
-    int testSamples = parameters.GetOneInt("testsamples", 32);
-    Float screenSpaceLineWidth = parameters.GetOneFloat("lineswidth", 2.0f);
+    int testSamples = parameters.GetOneInt("testsamples", 16);
+    Float screenSpaceLineWidth = parameters.GetOneFloat("lineswidth", 1.0f);
+
+    Point3f rgb_color_param = parameters.GetOnePoint3f("featurelineRGB", Point3f(1.0f, 0.0f, 0.0f));
+    pbrt::RGB featureRGB(rgb_color_param.x, rgb_color_param.y, rgb_color_param.z);
+    Float intensityScale_param = parameters.GetOneFloat("featurelineScale", 0.005f);
 
     return std::make_unique<FeatureLineIntegrator>(
-        maxDepth, camera, sampler, aggregate, lights, lightStrategy, 
-        regularize, testSamples, screenSpaceLineWidth);
+        maxDepth, camera, sampler, aggregate, lights, lightStrategy,
+        regularize, testSamples, screenSpaceLineWidth, featureRGB, intensityScale_param);
 }
 
 std::string FeatureLineIntegrator::ToString() const {

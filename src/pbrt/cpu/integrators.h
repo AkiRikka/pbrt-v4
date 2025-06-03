@@ -604,7 +604,8 @@ public:
                           const std::string &lightSampleStrategy = "bvh",
                           bool regularize = false, int testSamples = 16,
                           Float screenSpaceLineWidth_param = 5.0f,
-                          const SampledSpectrum& userFeatureLineColor_param = SampledSpectrum(0.0f));
+                          const pbrt::RGB& featureRGB_param = pbrt::RGB(0.0f, 0.0f, 0.0f),
+                          Float intensityScale_param = 0.01f);
 
     void Render() override;
 
@@ -644,6 +645,10 @@ private:
     // featureline
     Float screenSpaceLineWidth;
     SampledSpectrum userFeatureLineColor;
+
+    pbrt::RGB userFeatureRGB;
+    Float featureLineIntensityScale;
+    pbrt::Spectrum baseFeatureLineSpectrumObj; 
 
 
     mutable PathCache pathCache;

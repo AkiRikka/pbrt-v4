@@ -16,6 +16,7 @@
 #include <pbrt/util/spectrum.h>
 #include <pbrt/util/vecmath.h>
 #include <pbrt/cpu/primitive.h>
+#include <pbrt/cpu/integrators.h>
 
 
 namespace feature_line {
@@ -145,6 +146,7 @@ pstd::optional<FeatureLineInfo> Intersect(
     const pbrt::Primitive &aggregate,
     pbrt::Sampler &sampler,
     const pbrt::Camera &camera,
+    const pbrt::Spectrum &base_feature_spectrum,
     const pbrt::SampledWavelengths &lambda,
     pbrt::Float screenSpaceLineWidth,
     int numSamples) {
@@ -226,11 +228,13 @@ pstd::optional<FeatureLineInfo> Intersect(
                 pbrt::Float t_feature = pbrt::Dot(featureCandidatePoint - edge.o, edge.d);
 
                     pbrt::Float current_depth = t_feature;
+                    pbrt::SampledSpectrum unscaled_fl_color = base_feature_spectrum.Sample(lambda);
+
                     if (!closestLineSoFar.has_value() || current_depth < closestLineSoFar->depth) {
                         closestLineSoFar = FeatureLineInfo{
                             featureCandidatePoint,             // 存储特征点位置
                             current_depth,                     // 深度值
-                            pbrt::SampledSpectrum(0.0f)        // 默认颜色
+                            unscaled_fl_color //pbrt::SampledSpectrum(0.00065f)        // 默认颜色
                         };
                     }
                 }

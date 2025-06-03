@@ -30,6 +30,7 @@ pstd::optional<FeatureLineInfo> Intersect(
     const pbrt::Primitive &aggregate, // 场景对象
     pbrt::Sampler &sampler, // 采样器
     const pbrt::Camera &camera, // 相机对象
+    const pbrt::Spectrum &base_feature_spectrum,
     const pbrt::SampledWavelengths &lambda, // 采样波长
     pbrt::Float screenSpaceLineWidth, // 期望的屏幕空间线条宽度
     int numSamples); // 采样数量
