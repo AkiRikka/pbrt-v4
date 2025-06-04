@@ -22,6 +22,8 @@
 #include <pbrt/util/rng.h>
 #include <pbrt/util/sampling.h>
 
+#include <pbrt/featureline.h>
+
 #include <functional>
 #include <memory>
 #include <ostream>
@@ -503,19 +505,6 @@ class FunctionIntegrator : public Integrator {
     std::string imageFilename;
 };
 
-// Feature Line 数据结构
-struct FeatureLine {
-    Point3f position;
-    Float depth;
-    SampledSpectrum color;
-
-    FeatureLine() : depth(Infinity) {}
-    FeatureLine(Point3f pos, Float d, SampledSpectrum c)
-        : position(pos), depth(d), color(c) {}
-    
-    bool IsValid() const { return depth < Infinity; } 
-};
-
 // 路径顶点信息，用于存储路径上的交点信息
 struct PathVertex {
     Point3f position;
@@ -539,8 +528,13 @@ struct PathEdge {
     PathEdge() = default;
     PathEdge(Point3f s, Point3f e, int idx) 
         : start(s), end(e), vertexIndex(idx) {
-        direction = Normalize(e - s);
-        length = Distance(s, e);
+        if (s == e) {
+            direction = Vector3f(0,0,0);
+            length = 0;
+        } else {
+            direction = Normalize(e - s);
+            length = Distance(s, e);
+        }
     }
 };
 
@@ -558,12 +552,14 @@ struct PathSample {
     void AddVertex(const SurfaceInteraction& si, const SampledSpectrum& beta) {
         vertices.emplace_back(si, beta);
         
-        // 如果不是第一个顶点，创建边
-        if (vertices.size() > 1) {
-            Point3f start = (vertices.size() == 2) ? initialRay.o : vertices[vertices.size()-2].position;
-            Point3f end = si.p();
-            edges.emplace_back(start, end, vertices.size() - 1);
+        Point3f start;
+        if (vertices.size() == 1) { // 第一个顶点
+        start = initialRay.o;
+        } else { 
+        start = vertices[vertices.size()-2].position;
         }
+        Point3f end = vertices.back().position;
+        edges.emplace_back(start, end, vertices.size() - 1);
     }
 };
 
@@ -607,19 +603,18 @@ public:
                           Primitive aggregate, std::vector<Light> lights,
                           const std::string &lightSampleStrategy = "bvh",
                           bool regularize = false, int testSamples = 16,
-                          Float lineThreshold = 0.1f);
-    
+                          Float screenSpaceLineWidth_param = 5.0f,
+                          const pbrt::RGB& featureRGB_param = pbrt::RGB(0.0f, 0.0f, 0.0f),
+                          Float intensityScale_param = 0.01f);
+
     void Render() override;
 
     SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda, 
                       Sampler sampler, ScratchBuffer &scratchBuffer,
                       VisibleSurface *visibleSurface) const override;
     
-    // Feature line detection methods (Algorithm 3)
-    FeatureLine IntersectLine(const PathEdge& edge, Point2i pixel) const;
-    
     // Path modification (Algorithm 2)
-    PathSample ModifyPath(PathSample originalPath, Point2i pixel) const;
+    PathSample ModifyPath(PathSample originalPath, Point2i pixel, Sampler& thread_local_sampler) const;
     
     // Path tracing that stores complete path information
     PathSample TracePath(const RayDifferential& ray, SampledWavelengths& lambda,
@@ -632,13 +627,8 @@ public:
     std::string ToString() const override;
 
 private:
-    // Feature line detection helper functions
-    bool SatisfiesLineMetric(const PathVertex& vertex1, const PathVertex& vertex2) const;
-    Bounds2f ComputeTestRegion(const PathEdge& edge, Point2i pixel) const;
-    std::vector<Point2i> SampleRegion(const Bounds2f& region, int numSamples) const;
-    
     // Create emission vertex for feature line
-    PathVertex CreateEmissionVertex(const FeatureLine& line) const;
+    PathVertex CreateEmissionVertex(const feature_line::FeatureLineInfo& line) const;
     
     // Remove edges after specified edge index
     void RemoveEdgesAfter(PathSample& path, int edgeIndex) const;
@@ -651,7 +641,15 @@ private:
     LightSampler lightSampler;
     bool regularize;
     int testSamples;        // m number of samples for intersection test
-    Float lineThreshold;    // metric threshold
+
+    // featureline
+    Float screenSpaceLineWidth;
+    SampledSpectrum userFeatureLineColor;
+
+    pbrt::RGB userFeatureRGB;
+    Float featureLineIntensityScale;
+    pbrt::Spectrum baseFeatureLineSpectrumObj; 
+
 
     mutable PathCache pathCache;
 };
